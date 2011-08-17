@@ -3,13 +3,28 @@ require File.dirname(__FILE__) + '/test_helper'
 class Person < ActiveRecord::Base
 end
 class SourceTest < Test::Unit::TestCase
+  
+  context "source" do
+    should "set store_locally to true by default" do
+      assert_equal true, Source.new(nil, { :store_locally => true }, nil).store_locally
+    end
+    
+    should "let the user set store_locally to true" do
+      assert_equal true, Source.new(nil, { :store_locally => true }, nil).store_locally
+    end
+
+    should "let the user set store_locally to false" do
+      assert_equal false, Source.new(nil, { :store_locally => false }, nil).store_locally
+    end
+  end
+  
   context "a file source" do
     context "with delimited data" do
       setup do
         control = ETL::Control::Control.parse(File.dirname(__FILE__) + '/delimited.ctl')
         configuration = {
           :file => 'data/delimited.txt',
-          :parser => :delimited
+          :parser => :csv
         }
         definition = self.definition + [:sex]
     
@@ -27,7 +42,7 @@ class SourceTest < Test::Unit::TestCase
       control = ETL::Control::Control.parse(File.dirname(__FILE__) + '/multiple_delimited.ctl')
       configuration = {
         :file => 'data/multiple_delimited_*.txt',
-        :parser => :delimited
+        :parser => :csv
       }
 
       source = ETL::Control::FileSource.new(control, configuration, definition)
@@ -46,7 +61,7 @@ class SourceTest < Test::Unit::TestCase
         '/delimited_absolute.ctl')
       configuration = {
         :file => '/tmp/delimited_abs.txt',
-        :parser => :delimited
+        :parser => :csv
       }
       definition = self.definition + [:sex]
 
@@ -89,11 +104,11 @@ class SourceTest < Test::Unit::TestCase
     end
     should "find 1 row" do
       Person.delete_all
-      assert 0, Person.count
+      assert_equal 0, Person.count
       Person.create!(:first_name => 'Bob', :last_name => 'Smith', :ssn => '123456789')
-      assert 1, Person.count
+      assert_equal 1, Person.count
       rows = @source.collect { |row| row }
-      assert 1, rows.length
+      assert_equal 1, rows.length
     end
   end
   

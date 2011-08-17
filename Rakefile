@@ -1,50 +1,52 @@
+require 'bundler'
 require 'rake'
 require 'rake/testtask'
+require 'rdoc'
 require 'rdoc/task'
-require 'rake/packagetask'
-require 'rubygems/package_task'
-require 'rake/contrib/rubyforgepublisher'
-
-require File.join(File.dirname(__FILE__), 'lib/etl', 'version')
-
-module AWETL
-  PKG_BUILD       = ENV['PKG_BUILD'] ? '.' + ENV['PKG_BUILD'] : ''
-  PKG_NAME        = 'activewarehouse-etl'
-  PKG_VERSION     = ETL::VERSION::STRING + PKG_BUILD
-  PKG_FILE_NAME   = "#{PKG_NAME}-#{PKG_VERSION}"
-  PKG_DESTINATION = ENV["PKG_DESTINATION"] || "../#{PKG_NAME}"
-end
 
 namespace :test do
-  desc 'Create the databases required for tests'
-  task :create_databases do
-    system "mysqladmin create etl_unittest -u root"
-    system "mysqladmin create etl_unittest_execution -u root"
+
+  def run_tests(rvm, rails, database)
+    database_yml = File.dirname(__FILE__) + "/test/config/database.#{database}.yml"
+    FileUtils.cp(database_yml, 'test/config/database.yml')
+
+    puts
+    puts "============ Ruby #{rvm} - Rails #{rails} - Db #{database} ============="
+    puts
+    
+    rvm_script = File.expand_path("~/.rvm/scripts/rvm")
+    
+    # a bit hackish - source rvm as described here
+    # https://rvm.beginrescueend.com/workflow/scripting/
+    sh <<-BASH
+    source #{rvm_script}
+    export BUNDLE_GEMFILE=test/config/Gemfile.rails-#{rails}
+    rvm #{rvm}
+    bundle install
+    rake test
+BASH
   end
-  
-  desc 'Drop the test databases'
-  task :drop_databases do
-    system "mysqladmin drop etl_unittest -u root"
-    system "mysqladmin drop etl_unittest_execution -u root"
-  end
-  
-  desc 'Test against all databases'
-  task :all do
-    [
-      ['test/database.mysql.yml', ''],
-      ['test/database.postgres.yml', 'DB=postgresql']
-    ].each do |yml_file, run_flag|
-      FileUtils.cp(yml_file, 'test/database.yml')
-      system ["rake test", run_flag].join(" ")
+
+  desc 'Run the tests in all combinations described in test-matrix.yml'
+  task :matrix do
+    # a la travis
+    require 'yaml'
+    data = YAML.load(IO.read(File.dirname(__FILE__) + '/test-matrix.yml'))
+    data['rvm'].each do |rvm|
+      data['rails'].each do |rails|
+        data['database'].each do |database|
+          run_tests(rvm, rails, database)
+        end
+      end
     end
   end
-end  
+end
 
 task :default => :test
 
 desc 'Test the ETL application.'
 Rake::TestTask.new(:test) do |t|
-  t.libs << 'lib'
+  t.libs << 'lib' << '.'
   t.pattern = 'test/**/*_test.rb'
   t.verbose = true
   # TODO: reset the database
@@ -68,62 +70,6 @@ namespace :rcov do
     system("#{rcov} test/*_test.rb")
     # system("open coverage/index.html") if PLATFORM['darwin']
   end
-end
-
-# Gem Spec
-
-module AWETL
-  def self.package_files(package_prefix)
-    FileList[
-      "#{package_prefix}CHANGELOG",
-      "#{package_prefix}LICENSE",
-      "#{package_prefix}README",
-      "#{package_prefix}TODO",
-      "#{package_prefix}Rakefile",
-      "#{package_prefix}bin/**/*",
-      "#{package_prefix}doc/**/*",
-      "#{package_prefix}lib/**/*",
-      "#{package_prefix}examples/**/*",
-    ] - [ "#{package_prefix}test" ]
-  end
-
-  def self.spec(package_prefix = '')
-    Gem::Specification.new do |s|
-      s.name = 'activewarehouse-etl'
-      s.version = AWETL::PKG_VERSION
-      s.summary = "Pure Ruby ETL package."
-      s.description = <<-EOF
-        ActiveWarehouse ETL is a pure Ruby Extract-Transform-Load application for loading data into a database.
-      EOF
-
-      s.add_dependency('rake',                '>= 0.8.3')
-      s.add_dependency('activesupport',       '>= 2.1.0')
-      s.add_dependency('activerecord',        '>= 2.1.0')
-      s.add_dependency('fastercsv',           '>= 1.2.0')
-      s.add_dependency('adapter_extensions',  '>= 0.5.0')
-
-      s.rdoc_options << '--exclude' << '.'
-      s.has_rdoc = false
-
-      s.files = package_files(package_prefix).to_a.delete_if {|f| f.include?('.svn')}
-      s.require_path = 'lib'
-
-      s.bindir = "#{package_prefix}bin" # Use these for applications.
-      s.executables = ['etl']
-      s.default_executable = "etl"
-
-      s.author = "Anthony Eden"
-      s.email = "anthonyeden@gmail.com"
-      s.homepage = "http://activewarehouse.rubyforge.org/etl"
-      s.rubyforge_project = "activewarehouse"
-    end
-  end
-end
-
-Gem::PackageTask.new(AWETL.spec) do |pkg|
-  pkg.gem_spec = AWETL.spec
-  pkg.need_tar = true
-  pkg.need_zip = true
 end
 
 desc "Generate code statistics"
@@ -151,27 +97,7 @@ task :lines do
   puts "Total: Lines #{total_lines}, LOC #{total_codelines}"
 end
 
-desc "Publish the release files to RubyForge."
-task :release => [ :package ] do
-  `rubyforge login`
-
-  for ext in %w( gem tgz zip )
-    release_command = "rubyforge add_release activewarehouse #{AWETL::PKG_NAME} 'REL #{AWETL::PKG_VERSION}' pkg/#{AWETL::PKG_NAME}-#{AWETL::PKG_VERSION}.#{ext}"
-    puts release_command
-    system(release_command)
-  end
-end
-
-desc "Publish the API documentation"
+desc "Publish the API documentation (UNTESTED CURRENTLY)"
 task :pdoc => [:rdoc] do 
   Rake::SshDirPublisher.new("aeden@rubyforge.org", "/var/www/gforge-projects/activewarehouse/etl/rdoc", "rdoc").upload
-end
-
-desc "Reinstall the gem from a local package copy"
-task :reinstall => [:package] do
-  windows = RUBY_PLATFORM =~ /mswin/
-  sudo = windows ? '' : 'sudo'
-  gem = windows ? 'gem.bat' : 'gem'
-  `#{sudo} #{gem} uninstall #{AWETL::PKG_NAME} -x`
-  `#{sudo} #{gem} install pkg/#{AWETL::PKG_NAME}-#{AWETL::PKG_VERSION}`
 end

@@ -44,8 +44,20 @@ require 'adapter_extensions'
 
 if RUBY_VERSION < '1.9'
   require 'faster_csv'
+  CSV = FasterCSV unless defined?(CSV)
 else
   require 'csv'
+end
+
+# patch for https://github.com/activewarehouse/activewarehouse-etl/issues/24
+# allow components to require optional gems
+class Object
+  def optional_require(feature)
+    begin
+      require feature
+    rescue LoadError
+    end
+  end
 end
 
 $:.unshift(File.dirname(__FILE__))

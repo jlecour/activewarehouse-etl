@@ -200,9 +200,11 @@ module ETL #:nodoc:
       
       # Establish the named connection and return the database specific connection
       def establish_connection(name)
+        raise ETL::ETLError, "Connection with no name requested. Is there a missing :target parameter somewhere?" if name.blank?
+        
         logger.debug "Establishing connection to #{name}"
         conn_config = ETL::Base.configurations[name.to_s]
-        raise ETL::ETLError, "No connection found for #{name}" unless conn_config
+        raise ETL::ETLError, "Cannot find connection named #{name.inspect}" unless conn_config
         connection_method = "#{conn_config['adapter']}_connection"
         ETL::Base.send(connection_method, conn_config)
       end
@@ -255,15 +257,18 @@ module ETL #:nodoc:
     # * ETL::Batch::Batch instance
     def process(file)
       case file
-      when String
-        process(File.new(file))
-      when File
-        process_control(file) if file.path =~ /.ctl$/
-        process_batch(file) if file.path =~ /.ebf$/
-      when ETL::Control::Control
-        process_control(file)
-      when ETL::Batch::Batch
-        process_batch(file)
+        when String
+          process(File.new(file))
+        when File
+          case file.path
+            when /.ctl$/; process_control(file)
+            when /.ebf$/; process_batch(file)
+            else raise RuntimeError, "Unsupported file type - #{file.path}"
+          end
+        when ETL::Control::Control
+          process_control(file)
+        when ETL::Batch::Batch
+          process_batch(file)
       else
         raise RuntimeError, "Process object must be a String, File, Control 
         instance or Batch instance"
@@ -338,14 +343,15 @@ module ETL #:nodoc:
               control.after_read_processors.each do |processor|
                 processed_rows = []
                 rows.each do |row|
-                  processed_rows << processor.process(row)
+                  processed_rows << processor.process(row) unless empty_row?(row)
                 end
-                rows = processed_rows.flatten
+                rows = processed_rows.flatten.compact
               end
             rescue => e
               msg = "Error processing rows after read from #{Engine.current_source} on line #{Engine.current_source_row}: #{e}"
               errors << msg
               Engine.logger.error(msg)
+              e.backtrace.each { |line| Engine.logger.error(line) }
               exceeded_error_threshold?(control) ? break : next
             end
           end
@@ -355,9 +361,12 @@ module ETL #:nodoc:
             begin
               Engine.logger.debug "Executing transforms"
               rows.each do |row|
-                control.transforms.each do |transform|
-                  name = transform.name.to_sym
-                  row[name] = transform.transform(name, row[name], row)
+                # only do the transform if there is a row
+                unless empty_row?(row)
+                  control.transforms.each do |transform|
+                    name = transform.name.to_sym
+                    row[name] = transform.transform(name, row[name], row)
+                  end
                 end
               end
             rescue ResolverError => e
@@ -384,7 +393,9 @@ module ETL #:nodoc:
               Engine.logger.debug "Processing before write"
               control.before_write_processors.each do |processor|
                 processed_rows = []
-                rows.each { |row| processed_rows << processor.process(row) }
+                rows.each do |row|
+                  processed_rows << processor.process(row) unless empty_row?(row)
+                end
                 rows = processed_rows.flatten.compact
               end
             rescue => e
@@ -477,10 +488,16 @@ module ETL #:nodoc:
       # ETL::Transform::Transform.benchmarks.each do |klass, t|
 #         say "Avg #{klass}: #{Engine.rows_read/t} rows/sec"
 #       end
-      
+
+      ActiveRecord::Base.verify_active_connections!
       ETL::Engine.job.completed_at = Time.now
       ETL::Engine.job.status = (errors.length > 0 ? 'completed with errors' : 'completed')
       ETL::Engine.job.save!
+    end
+    
+    def empty_row?(row)
+      # unsure about why it should respond to :[] - keeping it just in case for the moment
+      row.nil? || !row.respond_to?(:[])
     end
     
     private
